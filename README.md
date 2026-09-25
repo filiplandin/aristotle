@@ -2,9 +2,14 @@
 
 Type what you believe. Aristotle takes it apart on a black stage, in his own voice, in under a minute.
 
-Each film is generated live. Claude writes the argument and the slides as HTML. ElevenLabs speaks it and returns
-word timestamps, so every slide lands on the word it belongs to. While it generates, Steve Jobs's 1985 remark about
-wanting to ask Aristotle a question plays over a halftone portrait that pulses with his voice.
+Each film is generated live, in three parallel stages after the script:
+
+- Opus writes the argument: steelman, load-bearing premise, one concrete case, a closing dilemma.
+- Sonnet writes the slides as HTML fragments. Opus writes a Three.js scene that evolves with the argument.
+- ElevenLabs speaks it and returns word timestamps, so every slide and every visual state lands on its word.
+
+While it generates, a 38-second cut of Steve Jobs's 1985 remarks about wanting to ask Aristotle a question plays
+over a halftone portrait that pulses with his voice.
 
 ## Run
 
@@ -41,4 +46,5 @@ Generated films are cached in `cache/`, so rehearsed beliefs play instantly. If 
 
 - `server.py`: script, slides, and voice generation.
 - `static/index.html`: the player.
-- `prologue.py`: rebuilds the Jobs intro from the wav file.
+- `prologue.py`: rebuilds the Jobs intro from the original recording.
+- `/?preview=<cache key>&t=<seconds>`: a silent still frame of a cached film, for screenshots.

@@ -1,23 +1,42 @@
-"""Build the prebuilt prologue once: Steve Jobs, 1985, on asking Aristotle a question."""
-import json, server
+"""Build the intro from the original Steve Jobs recording: three passages spliced, slides timed to his words."""
+import wave, io, json, base64, struct
 
-LINES = [
-    ("Steve Jobs. Nineteen eighty-five.", '<p class="q">Steve Jobs, 1985</p>', None),
-    ("[thoughtful] I was reading Aristotle... and I wanted to ask him a question.", '<p class="s">I wanted to ask him a question.</p>', None),
-    ("The problem was... you can't ask Aristotle a question.", '<p class="w">You can\'t.</p>', "bust"),
-    ("But someday... we will capture the underlying worldview of a mind like his... inside a machine.", '<p class="w">Someday.</p>', None),
-    ("And a student will not only read what Aristotle wrote.", '<p class="s dim">Not only read.</p>', None),
-    ("They will ask him a question. [pause] And get an answer.", '<p class="w">Ask him.</p>', None),
-    ("Forty years later.", '', "horizon"),
+SRC = "steve-jobs-aristotle-clean.wav"
+CUTS = [(0.0, 9.8), (37.0, 42.0), (105.2, 128.6)]  # tutor/jealous · can't ask him · hope: ask him, get an answer
+FADE = 0.04
+
+w = wave.open(SRC); fr = w.getframerate(); raw = w.readframes(w.getnframes()); params = w.getparams()
+samples = list(struct.unpack(f"<{len(raw)//2}h", raw))
+out = []
+for a, b in CUTS:
+    seg = samples[int(a * fr):int(b * fr)]; n = int(FADE * fr)
+    for i in range(n): seg[i] = int(seg[i] * i / n); seg[-1 - i] = int(seg[-1 - i] * i / n)
+    out += seg
+buf = io.BytesIO(); o = wave.open(buf, "wb"); o.setparams(params); o.writeframes(struct.pack(f"<{len(out)}h", *out)); o.close()
+dur = len(out) / fr
+
+def T(src_t):  # source time -> spliced time
+    acc = 0
+    for a, b in CUTS:
+        if a <= src_t <= b: return acc + src_t - a
+        acc += b - a
+    raise ValueError(src_t)
+
+SCENES = [
+    (0.0,      '<p class="q">Steve Jobs, 1985</p>', None),
+    (T(5.3),   '<p class="w">Aristotle.</p>', None),
+    (T(7.5),   '<p class="s dim">I became immensely jealous.</p>', None),
+    (T(37.4),  '<p class="w">You can\'t ask him.</p>', None),
+    (T(40.7),  '<p class="s dim">I won\'t get an answer.</p>', None),
+    (T(106.3), '<p class="w">Someday.</p>', None),
+    (T(111.0), '<p class="s">Capture a worldview.</p>', None),
+    (T(117.4), '<p class="w">In a computer.</p>', None),
+    (T(124.3), '<p class="w">Ask him.</p>', None),
+    (T(127.4), '<p class="w">Get an answer.</p>', None),
+    (dur - 0.3, '', 'horizon'),
 ]
-pass  # same designed keynote voice as Aristotle
-script = " ".join(l for l, _, _ in LINES)
-audio = server.tts(script)
-al = audio["alignment"]; chars = "".join(al["characters"]); starts = al["character_start_times_seconds"]
-scenes, pos = [], 0
-for line, html, img in LINES:
-    i = max(chars.find(line[:12], pos), pos)
-    scenes.append({"line": line, "html": html, "image": img, "start": starts[min(i, len(starts) - 1)]}); pos = i + len(line)
-film = {"belief": "prologue", "script": script, "duration": al["character_end_times_seconds"][-1], "scenes": scenes, "audio": audio["audio_base64"]}
+film = {"belief": "prologue", "mime": "audio/wav", "duration": dur,
+        "scenes": [{"line": "", "html": h, "image": i, "start": round(s, 2)} for s, h, i in SCENES],
+        "audio": base64.b64encode(buf.getvalue()).decode()}
 json.dump(film, open("static/prologue.json", "w"))
-print("prologue", round(film["duration"], 1), "s", [round(s["start"], 1) for s in scenes])
+print("prologue", round(dur, 1), "s", [s["start"] for s in film["scenes"]])

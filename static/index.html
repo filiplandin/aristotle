@@ -1,5 +1,6 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><title>Aristotle</title>
+<script src="/static/three.min.js"></script>
 <style>
   html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif;overflow:hidden;cursor:none}
   .screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;transition:opacity 1.2s ease}
@@ -17,6 +18,7 @@
   #wait p{font-weight:200;font-size:1.6vw;color:#666;letter-spacing:.3em;text-transform:uppercase;margin-top:6vh}
   .dot{width:1.2vw;height:1.2vw;border-radius:50%;background:#fff;animation:pulse 3s ease-in-out infinite}
   @keyframes pulse{0%,100%{transform:scale(.6);opacity:.25}50%{transform:scale(1);opacity:1}}
+  #gl{position:absolute;inset:0;width:100%;height:100%;opacity:0;transition:opacity 2.5s ease}
   #bg{position:absolute;inset:0;background:#000 center/cover no-repeat;opacity:0;transition:opacity 2.5s ease;filter:grayscale(1) contrast(1.1)}
   #veil{position:absolute;inset:0;background:radial-gradient(ellipse at center,rgba(0,0,0,.25),rgba(0,0,0,.85) 75%)}
   #light{position:absolute;left:50%;top:50%;width:70vmin;height:70vmin;margin:-35vmin 0 0 -35vmin;border-radius:50%;
@@ -38,6 +40,7 @@
   #jobs{position:absolute;left:0;top:0;height:100vh;width:50vw;opacity:0;transition:opacity 2s ease;pointer-events:none}
   #film.split #scene{padding-left:50vw;padding-right:6vw;text-align:left;justify-content:flex-start}
   #film.split #light{left:25vw}
+  body.preview *{transition:none!important;animation:none!important}
   #end{position:absolute;bottom:4vh;width:100%;text-align:center;color:#333;font-size:1vw;letter-spacing:.3em;text-transform:uppercase;opacity:0;transition:opacity 3s}
 </style></head><body>
 
@@ -51,7 +54,7 @@
 <div id="wait" class="screen hidden"><div class="dot"></div><p id="status">Forty years later</p></div>
 
 <div id="film" class="screen hidden">
-  <div id="bg"></div><div id="veil"></div><div id="light"></div>
+  <canvas id="gl"></canvas><div id="bg"></div><div id="veil"></div><div id="light"></div>
   <canvas id="jobs"></canvas>
   <div id="scene"></div>
   <div id="end">press return to speak again</div>
@@ -64,6 +67,12 @@ const EXAMPLES = ['AI will make humans obsolete.', 'Money is the only honest mea
   'Move fast and break things.', 'Everyone is entitled to their opinion.', 'I will be happy once I am successful.', 'Love is just chemistry.'];
 $('belief').value = ''; window.addEventListener('pageshow', () => { $('belief').value = ''; $('belief').focus(); });
 $('belief').addEventListener('input', () => $('ask').classList.toggle('typed', !!$('belief').value));
+const PV = new URLSearchParams(location.search);
+if (PV.get('preview')) fetch('/film/' + PV.get('preview')).then(r => r.json()).then(f => {  // silent still frame at t, for screenshots
+  document.body.classList.add('preview'); film = current = f; const t = +(PV.get('t') || 0); show('film'); startVisual(f.visual); gl.t0 = performance.now() - t * 1000;
+  let n = -1; while (n + 1 < f.scenes.length && t >= f.scenes[n + 1].start) n++; if (n >= 0) setScene(f, n);
+  $('light').style.transform = 'scale(.8)'; setInterval(() => renderVisual(0.3), 40);
+});
 let prologue, film, audio, ctx, analyser, data, idx = -1, playing = false, current;
 fetch('/static/prologue.json').then(r => r.json()).then(p => { prologue = p; preload(p); });
 const preload = f => { for (const s of f.scenes) if (s.image) new Image().src = `/static/img/${s.image}.jpg`; };
@@ -92,14 +101,14 @@ function play(f, onEnd) {
   const src = ctx.createMediaElementSource(audio);
   analyser = ctx.createAnalyser(); analyser.fftSize = 256; data = new Uint8Array(analyser.frequencyBinCount);
   src.connect(analyser); analyser.connect(ctx.destination);
-  show('film');
+  show('film'); startVisual(f.visual);
   setTimeout(() => { ctx.resume(); audio.play(); playing = true; breathe(); }, 1200);
   audio.addEventListener('timeupdate', () => {
     const t = audio.currentTime;
     let n = idx; while (n + 1 < f.scenes.length && t >= f.scenes[n+1].start - 0.15) n++;
     if (n !== idx) setScene(f, n);
   });
-  audio.addEventListener('ended', () => { playing = false; $('light').style.transform = 'scale(.4)'; $('scene').style.opacity = 0; setTimeout(onEnd, 1000); });
+  audio.addEventListener('ended', () => { playing = false; stopVisual(); $('light').style.transform = 'scale(.4)'; $('scene').style.opacity = 0; setTimeout(onEnd, 1000); });
 }
 
 function setScene(f, n) {
@@ -143,6 +152,28 @@ function drawJobs(level) {
   }
 }
 
+// --- generated 3D layer ---
+const gl = { renderer: null, scene: null, camera: null, update: null, t0: 0 };
+function startVisual(js) {
+  stopVisual(); if (!js || !window.THREE) return;
+  try {
+    const c = $('gl'), W = c.clientWidth, H = c.clientHeight;
+    gl.renderer = gl.renderer || new THREE.WebGLRenderer({ canvas: c, antialias: true, alpha: true });
+    gl.renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); gl.renderer.setSize(W, H, false); gl.renderer.setClearColor(0x000000, 0);
+    gl.scene = new THREE.Scene();
+    gl.camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100); gl.camera.position.set(0, 0, 6); gl.camera.lookAt(0, 0, 0);
+    const N = current.scenes.length;
+    gl.update = new Function('THREE', 'scene', 'camera', 'renderer', 'W', 'H', 'N', js + '\n;return typeof update === "function" ? update : null;')(THREE, gl.scene, gl.camera, gl.renderer, W, H, N);
+    gl.t0 = performance.now(); c.style.opacity = 1;
+  } catch (e) { console.warn('visual failed', e); stopVisual(); }
+}
+function stopVisual() { gl.update = null; $('gl').style.opacity = 0; if (gl.renderer) gl.renderer.clear(); }
+function renderVisual(level) {
+  if (!gl.update) return;
+  try { gl.update((performance.now() - gl.t0) / 1000, idx, level); gl.renderer.render(gl.scene, gl.camera); }
+  catch (e) { console.warn('visual update failed', e); stopVisual(); }
+}
+
 function breathe() {
   if (!playing) return;
   analyser.getByteFrequencyData(data);
@@ -150,6 +181,7 @@ function breathe() {
   const v = sum / 38 / 255;
   $('light').style.transform = `scale(${0.55 + v * 1.1})`;
   drawJobs(v);
+  renderVisual(v);
   requestAnimationFrame(breathe);
 }
 

@@ -63,19 +63,37 @@ Inline style allowed for a rare twist. No scripts, no images, NO emoji in HTML.
 Each slide may name ONE full-screen background image from {IMAGES} or null. Use images in at most 3 slides, "bust" at most once, and always on the first or last slide if used.
 OUTPUT: ONLY a JSON array, same length and order as the lines: [{{"html":"<p class=w>Obsolete.</p>","image":null}}, ...]"""
 
+VISUAL = """You are a generative artist writing a Three.js scene for a spoken keynote film. Stage: pure black. White text slides sit on top of your work.
+You receive the spoken lines. Write ONE evolving 3D visual that embodies the ARGUMENT, not the words: the belief's world, the crack in it, the turn, the final dilemma.
+Think in metaphor made of geometry: a lattice that turns out to be hollow, a swarm that resolves into one figure, two forms that cannot occupy the same space, a path that loops.
+Design: monochrome white and grey on black, mostly wireframe, points, or lines. Sparse. Slow. Nothing decorative. Depth and restraint, like a Jony Ive object under one light.
+Motion must change with the argument: use the current scene index to move between states with easing (lerp toward targets), never hard cuts. Voice level drives a subtle pulse only.
+
+You are given these globals: THREE, scene, camera (PerspectiveCamera at z=6 looking at origin), renderer, W, H, N (number of lines).
+Write plain JavaScript that runs once at top level to build the scene, and defines:
+  function update(t, i, level)   // t seconds since start, i current line index 0..N-1 (or -1 before the first), level voice amplitude 0..1
+Constraints: under 120 lines. Only THREE core (no loaders, no addons, no imports, no fetch, no DOM). Total geometry under 20000 vertices. No text. No colors other than greys.
+Never call renderer.render or requestAnimationFrame; the stage does that. Never touch document or window.
+OUTPUT: ONLY the JavaScript, no markdown fences, no commentary."""
+
 import anthropic
 _client = anthropic.Anthropic(max_retries=4, timeout=120)
 
 
 def claude(model: str, system: str, user: str, think: bool = False):
     kw = dict(model=model, max_tokens=4000, system=system, messages=[{"role": "user", "content": user}])
-    try:
-        msg = _client.messages.create(thinking={"type": "adaptive"} if think else {"type": "disabled"}, **kw)
-    except Exception:  # fast fallback: never wait on thinking
-        kw["model"] = "claude-sonnet-5"
-        msg = _client.messages.create(thinking={"type": "disabled"}, **kw)
+    fast = dict(thinking={"type": "adaptive"}, output_config={"effort": "low"})
+    msg = _client.messages.create(**(dict(thinking={"type": "adaptive"}) if think else fast), **kw)
     text = next(b.text for b in msg.content if b.type == "text").strip()
-    return json.loads(text[text.find("["): text.rfind("]") + 1])
+    return json.JSONDecoder().raw_decode(text[text.find("["):])[0]
+
+
+def visual(lines) -> str:
+    kw = dict(model="claude-opus-5-5", max_tokens=8000, system=VISUAL, thinking={"type": "adaptive"}, output_config={"effort": "low"},
+              messages=[{"role": "user", "content": "Spoken lines:\n" + json.dumps(lines, indent=1)}])
+    text = next(b.text for b in _client.messages.create(**kw).content if b.type == "text").strip()
+    if text.startswith("```"): text = text.split("\n", 1)[1].rsplit("```", 1)[0]
+    return text
 
 
 def tts(script: str) -> dict:
@@ -92,10 +110,13 @@ def tts(script: str) -> dict:
 def build(belief: str) -> dict:
     lines = [l.strip() for l in claude("claude-opus-5-5", SCRIPT, f'The person believes: "{belief}"', think=True)]
     script = " ".join(lines)
-    with ThreadPoolExecutor(2) as ex:
+    with ThreadPoolExecutor(3) as ex:
         a = ex.submit(tts, script)
         b = ex.submit(claude, "claude-sonnet-5", SLIDES, "Spoken lines:\n" + json.dumps(lines, indent=1))
+        c = ex.submit(visual, lines)
         audio, slides = a.result(), b.result()
+        try: js = c.result()
+        except Exception: js = ""
     scenes = [{"line": l, "html": sl.get("html", ""), "image": sl.get("image")} for l, sl in zip(lines, slides)]
     al = audio["alignment"]
     starts = al["character_start_times_seconds"]
@@ -110,7 +131,7 @@ def build(belief: str) -> dict:
         pos = i + len(line)
     for s, st in zip(scenes, t):
         s["start"] = st
-    return {"belief": belief, "script": script, "duration": total, "scenes": scenes, "audio": audio["audio_base64"]}
+    return {"belief": belief, "script": script, "duration": total, "scenes": scenes, "visual": js, "audio": audio["audio_base64"]}
 
 
 app = FastAPI()
@@ -133,6 +154,11 @@ def generate(body: dict):
     f.write_text(json.dumps(film))
     (CACHE / "latest.json").write_text(json.dumps(film))
     return film
+
+
+@app.get("/film/{key}")
+def film(key: str):
+    return FileResponse(CACHE / f"{key}.json")
 
 
 @app.get("/")
