@@ -64,7 +64,7 @@ Each slide may name ONE full-screen background image from {IMAGES} or null. Use 
 OUTPUT: ONLY a JSON array, same length and order as the lines: [{{"html":"<p class=w>Obsolete.</p>","image":null}}, ...]"""
 
 import anthropic
-_client = anthropic.Anthropic()
+_client = anthropic.Anthropic(max_retries=4, timeout=120)
 
 
 def claude(model: str, system: str, user: str, think: bool = False):
