@@ -60,7 +60,7 @@
 <script>
 const $ = id => document.getElementById(id);
 const show = id => { if (id === 'ask') { $('belief').value = ''; $('ask').classList.remove('typed'); } for (const s of ['ask','wait','film']) $(s).classList.toggle('hidden', s !== id); };
-const EXAMPLES = ['AI will make humans obsolete.', 'Money is the only honest measure of value.', 'Happiness is just a matter of luck.',
+const EXAMPLES = ['AI will make humans obsolete.', 'Money is the only honest measure of value.', 'We must pace the frontier or everybody dies as we race to the bottom.',
   'Move fast and break things.', 'Everyone is entitled to their opinion.', 'I will be happy once I am successful.', 'Love is just chemistry.'];
 $('belief').value = ''; window.addEventListener('pageshow', () => { $('belief').value = ''; $('belief').focus(); });
 $('belief').addEventListener('input', () => $('ask').classList.toggle('typed', !!$('belief').value));
