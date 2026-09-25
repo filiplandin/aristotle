@@ -80,12 +80,16 @@ import anthropic
 _client = anthropic.Anthropic(max_retries=4, timeout=120)
 
 
-def claude(model: str, system: str, user: str, think: bool = False):
+def claude(model: str, system: str, user: str, think: bool = False, retry: bool = False):
     kw = dict(model=model, max_tokens=4000, system=system, messages=[{"role": "user", "content": user}])
     fast = dict(thinking={"type": "adaptive"}, output_config={"effort": "low"})
     msg = _client.messages.create(**(dict(thinking={"type": "adaptive"}) if think else fast), **kw)
     text = next(b.text for b in msg.content if b.type == "text").strip()
-    return json.JSONDecoder().raw_decode(text[text.find("["):])[0]
+    try:
+        return json.JSONDecoder().raw_decode(text[text.find("["):])[0]
+    except json.JSONDecodeError:
+        if retry: raise
+        return claude(model, system, user, think, retry=True)
 
 
 def visual(lines) -> str:
