@@ -1,0 +1,164 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Aristotle</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif;overflow:hidden;cursor:none}
+  .screen{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;transition:opacity 1.2s ease}
+  .hidden{opacity:0;pointer-events:none}
+  #ask{background:radial-gradient(ellipse 60vw 40vh at 50% 58%,rgba(255,255,255,.045),rgba(0,0,0,0) 70%)}
+  #ask .quote{font-weight:200;font-size:2.1vw;letter-spacing:-.01em;color:#777;margin:0 0 1.2vh;animation:rise 1.6s cubic-bezier(.2,.8,.2,1) both}
+  #ask .by{font-size:.85vw;letter-spacing:.4em;text-transform:uppercase;color:#3a3a3a;margin:0 0 9vh;animation:rise 1.6s .3s cubic-bezier(.2,.8,.2,1) both}
+  #belief{background:none;border:0;color:#fff;font:200 5.2vw/1.2 -apple-system,"Helvetica Neue",Helvetica;width:84vw;text-align:center;outline:0;padding:1vh 0;caret-color:#fff;cursor:text;letter-spacing:-.035em;animation:rise 1.6s .5s cubic-bezier(.2,.8,.2,1) both}
+  #belief::placeholder{color:#2a2a2a;opacity:1;font-weight:200}
+  #belief::-webkit-input-placeholder{color:#2a2a2a;opacity:1}
+  #ask .hint{font-size:.85vw;letter-spacing:.4em;text-transform:uppercase;color:#2a2a2a;margin-top:5vh;transition:color .6s}
+  #ask.typed .hint{color:#666}
+  #ask:not(.typed) #belief{caret-color:transparent}
+  @keyframes rise{from{opacity:0;transform:translateY(2vh)}to{opacity:1;transform:none}}
+  #wait p{font-weight:200;font-size:1.6vw;color:#666;letter-spacing:.3em;text-transform:uppercase;margin-top:6vh}
+  .dot{width:1.2vw;height:1.2vw;border-radius:50%;background:#fff;animation:pulse 3s ease-in-out infinite}
+  @keyframes pulse{0%,100%{transform:scale(.6);opacity:.25}50%{transform:scale(1);opacity:1}}
+  #bg{position:absolute;inset:0;background:#000 center/cover no-repeat;opacity:0;transition:opacity 2.5s ease;filter:grayscale(1) contrast(1.1)}
+  #veil{position:absolute;inset:0;background:radial-gradient(ellipse at center,rgba(0,0,0,.25),rgba(0,0,0,.85) 75%)}
+  #light{position:absolute;left:50%;top:50%;width:70vmin;height:70vmin;margin:-35vmin 0 0 -35vmin;border-radius:50%;
+         background:radial-gradient(circle,rgba(255,255,255,.16) 0%,rgba(255,255,255,.05) 35%,rgba(0,0,0,0) 70%);
+         transform:scale(.6);transition:transform .12s ease-out;pointer-events:none}
+  #scene{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:0 10vw;transition:opacity .9s ease;line-height:1.1;letter-spacing:-.03em}
+  #scene>*{max-width:80vw;margin:0}
+  #scene .w{font-size:10vw;font-weight:600;letter-spacing:-.05em}
+  #scene .s{font-size:3vw;font-weight:200;letter-spacing:-.01em;line-height:1.25}
+  #scene .q{font-size:4.5vw;font-weight:200;color:#888;line-height:1.2}
+  #scene .dim{color:#444} #scene .thin{font-weight:200}
+  #scene .num{font-size:18vw;font-weight:100;letter-spacing:-.06em;line-height:1}
+  #scene .vs{display:flex;gap:6vw;font-size:7vw;font-weight:600;letter-spacing:-.04em;align-items:center}
+  #scene .vs span:first-child{color:#444;text-decoration:line-through;text-decoration-thickness:.06em}
+  #scene .strike{text-decoration:line-through;color:#555;text-decoration-thickness:.06em}
+  #scene .tiny{display:block;font-size:1.2vw;font-weight:400;letter-spacing:.35em;text-transform:uppercase;color:#666;margin-top:2vh}
+  #scene>*{animation:enter 1.1s cubic-bezier(.2,.8,.2,1) both}
+  @keyframes enter{from{opacity:0;transform:scale(1.06) translateY(1vh);filter:blur(6px)}to{opacity:1;transform:none;filter:none}}
+  #jobs{position:absolute;left:0;top:0;height:100vh;width:50vw;opacity:0;transition:opacity 2s ease;pointer-events:none}
+  #film.split #scene{padding-left:50vw;padding-right:6vw;text-align:left;justify-content:flex-start}
+  #film.split #light{left:25vw}
+  #end{position:absolute;bottom:4vh;width:100%;text-align:center;color:#333;font-size:1vw;letter-spacing:.3em;text-transform:uppercase;opacity:0;transition:opacity 3s}
+</style></head><body>
+
+<div id="ask" class="screen">
+  <p class="quote">“Ask Aristotle a question, and get an answer.”</p>
+  <p class="by">Steve Jobs, 1985</p>
+  <input id="belief" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="What do you believe?">
+  <p class="hint">press return</p>
+</div>
+
+<div id="wait" class="screen hidden"><div class="dot"></div><p id="status">Forty years later</p></div>
+
+<div id="film" class="screen hidden">
+  <div id="bg"></div><div id="veil"></div><div id="light"></div>
+  <canvas id="jobs"></canvas>
+  <div id="scene"></div>
+  <div id="end">press return to speak again</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const show = id => { if (id === 'ask') { $('belief').value = ''; $('ask').classList.remove('typed'); } for (const s of ['ask','wait','film']) $(s).classList.toggle('hidden', s !== id); };
+const EXAMPLES = ['AI will make humans obsolete.', 'Money is the only honest measure of value.', 'Happiness is just a matter of luck.',
+  'Move fast and break things.', 'Everyone is entitled to their opinion.', 'I will be happy once I am successful.', 'Love is just chemistry.'];
+$('belief').value = ''; window.addEventListener('pageshow', () => { $('belief').value = ''; $('belief').focus(); });
+$('belief').addEventListener('input', () => $('ask').classList.toggle('typed', !!$('belief').value));
+let prologue, film, audio, ctx, analyser, data, idx = -1, playing = false, current;
+fetch('/static/prologue.json').then(r => r.json()).then(p => { prologue = p; preload(p); });
+const preload = f => { for (const s of f.scenes) if (s.image) new Image().src = `/static/img/${s.image}.jpg`; };
+
+$('belief').addEventListener('keydown', async e => {
+  if (e.key !== 'Enter' || !$('belief').value.trim()) return;
+  const belief = $('belief').value.trim();
+  film = null;
+  const pending = fetch('/generate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({belief})})
+    .then(r => r.json()).then(f => { if (!f.error) preload(f); return f; });
+  const onReady = async () => {
+    const f = await pending;
+    if (f.error) { show('wait'); $('status').textContent = 'Aristotle is silent. ' + f.error; return; }
+    film = f; play(film, () => { $('end').style.opacity = 1; });
+  };
+  if (prologue) play(prologue, () => { show('wait'); onReady(); });
+  else { show('wait'); onReady(); }
+});
+
+function play(f, onEnd) {
+  $('film').classList.remove('split'); $('jobs').style.opacity = 0;
+  current = f; idx = -1; $('scene').innerHTML = ''; $('scene').style.opacity = 1; $('bg').style.opacity = 0; $('end').style.opacity = 0;
+  if (audio) { audio.pause(); }
+  audio = new Audio(`data:${f.mime || 'audio/mpeg'};base64,` + f.audio);
+  ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+  const src = ctx.createMediaElementSource(audio);
+  analyser = ctx.createAnalyser(); analyser.fftSize = 256; data = new Uint8Array(analyser.frequencyBinCount);
+  src.connect(analyser); analyser.connect(ctx.destination);
+  show('film');
+  setTimeout(() => { ctx.resume(); audio.play(); playing = true; breathe(); }, 1200);
+  audio.addEventListener('timeupdate', () => {
+    const t = audio.currentTime;
+    let n = idx; while (n + 1 < f.scenes.length && t >= f.scenes[n+1].start - 0.15) n++;
+    if (n !== idx) setScene(f, n);
+  });
+  audio.addEventListener('ended', () => { playing = false; $('light').style.transform = 'scale(.4)'; $('scene').style.opacity = 0; setTimeout(onEnd, 1000); });
+}
+
+function setScene(f, n) {
+  idx = n; const s = f.scenes[n];
+  const pro = f === prologue && n < f.scenes.length - 1;
+  $('film').classList.toggle('split', pro); $('jobs').style.opacity = pro ? 1 : 0;
+  const el = $('scene'); el.style.opacity = 0;
+  setTimeout(() => { el.innerHTML = s.html || ''; el.style.opacity = 1; }, s.html ? 450 : 0);
+  const bg = $('bg');
+  if (s.image) { bg.style.backgroundImage = `url(/static/img/${s.image}.jpg)`; bg.style.opacity = .55; }
+  else bg.style.opacity = 0;
+}
+
+// --- Steve Jobs halftone portrait, pulses with the voice ---
+const jobs = { dots: [], ready: false, level: 0 };
+(() => {
+  const img = new Image(); img.src = '/static/img/jobs.jpg';
+  img.onload = () => {
+    const cols = 96, sx = 150, sy = 90, sw = 640, sh = 1000;  // crop to the face
+    const rows = Math.round(cols * sh / sw);
+    const off = document.createElement('canvas'); off.width = cols; off.height = rows;
+    const o = off.getContext('2d'); o.drawImage(img, sx, sy, sw, sh, 0, 0, cols, rows);
+    const d = o.getImageData(0, 0, cols, rows).data;
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const i = (y * cols + x) * 4, lum = (0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2]) / 255;
+      jobs.dots.push([x / cols, y / rows, Math.pow(Math.max(0, lum - 0.08) / 0.92, 1.35)]);
+    }
+    jobs.cols = cols; jobs.rows = rows; jobs.ready = true;
+  };
+})();
+function drawJobs(level) {
+  const c = $('jobs'); if (!jobs.ready || c.style.opacity === '0' || c.style.opacity === '') return;
+  const W = c.width = c.clientWidth * devicePixelRatio, H = c.height = c.clientHeight * devicePixelRatio;
+  const g = c.getContext('2d'); g.clearRect(0, 0, W, H);
+  const cell = Math.min(W / jobs.cols, H / jobs.rows) * 0.92, ox = (W - cell * jobs.cols) / 2 + W * 0.04, oy = (H - cell * jobs.rows) / 2;
+  const boost = 1 + level * 0.45;
+  g.fillStyle = '#fff';
+  for (const [x, y, v] of jobs.dots) {
+    const r = v * cell * 0.5 * boost; if (r < 0.3) continue;
+    g.beginPath(); g.arc(ox + x * jobs.cols * cell + cell / 2, oy + y * jobs.rows * cell + cell / 2, r, 0, 6.283); g.fill();
+  }
+}
+
+function breathe() {
+  if (!playing) return;
+  analyser.getByteFrequencyData(data);
+  let sum = 0; for (let i = 2; i < 40; i++) sum += data[i];
+  const v = sum / 38 / 255;
+  $('light').style.transform = `scale(${0.55 + v * 1.1})`;
+  drawJobs(v);
+  requestAnimationFrame(breathe);
+}
+
+document.addEventListener('keydown', e => {
+  const asking = !$('ask').classList.contains('hidden');
+  if (asking && e.key >= '1' && e.key <= '7' && !$('belief').value) { e.preventDefault(); $('belief').value = EXAMPLES[e.key - 1]; return; }
+  if (asking) return;
+  if (e.key === 'Enter' && !playing) { $('belief').value = ''; show('ask'); $('belief').focus(); }
+  if (e.key === 'r' && film && !playing) play(film, () => { $('end').style.opacity = 1; });
+  if (e.key === 'Escape') location.reload();
+});
+</script></body></html>
