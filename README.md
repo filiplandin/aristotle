@@ -2,11 +2,15 @@
 
 Type what you believe. Aristotle takes it apart on a black stage, in his own voice, in under a minute.
 
-Each film is generated live, in three parallel stages after the script:
+Each film is generated live and streamed, so Aristotle starts speaking within two seconds:
 
-- Opus writes the argument: steelman, load-bearing premise, one concrete case, a closing dilemma.
-- Sonnet writes the slides as HTML fragments. Opus writes a Three.js scene that evolves with the argument.
-- ElevenLabs speaks it and returns word timestamps, so every slide and every visual state lands on its word.
+- The belief is read back verbatim at once. Its voice is synthesized before any model has answered.
+- Sonnet writes two opening beats in about two seconds. They cover the time Opus spends reasoning.
+- Opus writes the rest with reasoning on: the load-bearing premise, one concrete case, a closing dilemma.
+  Lines stream out one by one, and each is voiced and given a slide the moment it closes.
+- Opus also writes a Three.js scene that embodies the argument. It fades in when ready, mid-film.
+
+Measured on a fresh belief: first sound at 1.7 s, all lines voiced by 20 s, film runs about 50 s.
 
 While it generates, a 38-second cut of Steve Jobs's 1985 remarks about wanting to ask Aristotle a question plays
 over a halftone portrait that pulses with his voice.
@@ -26,6 +30,7 @@ open http://localhost:8000
 | Key | Action |
 |---|---|
 | `1` to `7` | fill an example belief |
+| `p` | play the Steve Jobs intro |
 | `return` | submit, or ask again after a film |
 | `r` | replay the last film |
 | `esc` | reset |

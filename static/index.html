@@ -51,7 +51,7 @@
   <p class="hint">press return</p>
 </div>
 
-<div id="wait" class="screen hidden"><div class="dot"></div><p id="status">Forty years later</p></div>
+<div id="wait" class="screen hidden"><div class="dot"></div><p id="status">Aristotle is thinking</p></div>
 
 <div id="film" class="screen hidden">
   <canvas id="gl"></canvas><div id="bg"></div><div id="veil"></div><div id="light"></div>
@@ -67,68 +67,58 @@ const EXAMPLES = ['AI will make humans obsolete.', 'Money is the only honest mea
   'Move fast and break things.', 'Everyone is entitled to their opinion.', 'I will be happy once I am successful.', 'Love is just chemistry.'];
 $('belief').value = ''; window.addEventListener('pageshow', () => { $('belief').value = ''; $('belief').focus(); });
 $('belief').addEventListener('input', () => $('ask').classList.toggle('typed', !!$('belief').value));
-const PV = new URLSearchParams(location.search);
-if (PV.get('preview')) fetch('/film/' + PV.get('preview')).then(r => r.json()).then(f => {  // silent still frame at t, for screenshots
-  document.body.classList.add('preview'); film = current = f; const t = +(PV.get('t') || 0); show('film'); startVisual(f.visual); gl.t0 = performance.now() - t * 1000;
-  let n = -1; while (n + 1 < f.scenes.length && t >= f.scenes[n + 1].start) n++; if (n >= 0) setScene(f, n);
-  $('light').style.transform = 'scale(.8)'; setInterval(() => renderVisual(0.3), 40);
-});
-let prologue, film, audio, ctx, analyser, data, idx = -1, playing = false, current;
-fetch('/static/prologue.json').then(r => r.json()).then(p => { prologue = p; preload(p); });
-const preload = f => { for (const s of f.scenes) if (s.image) new Image().src = `/static/img/${s.image}.jpg`; };
+let prologue, ctx, analyser, data, idx = -1, playing = false, current, audio;
+const normalize = f => f.segments ? f : { ...f, segments: [{ line: '', mime: f.mime || 'audio/mpeg', audio: f.audio, duration: f.duration, scenes: f.scenes }] };
+fetch('/static/prologue.json').then(r => r.json()).then(p => { prologue = normalize(p); preload(prologue); });
+const preload = f => { for (const sg of f.segments) for (const s of sg.scenes) if (s.image) new Image().src = `/static/img/${s.image}.jpg`; };
 
-$('belief').addEventListener('keydown', async e => {
-  if (e.key !== 'Enter' || !$('belief').value.trim()) return;
-  const belief = $('belief').value.trim();
-  film = null;
-  const pending = fetch('/generate', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({belief})})
-    .then(r => r.json()).then(f => { if (!f.error) preload(f); return f; });
-  const onReady = async () => {
-    const f = await pending;
-    if (f.error) { show('wait'); $('status').textContent = 'Aristotle is silent. ' + f.error; return; }
-    film = f; play(film, () => { $('end').style.opacity = 1; });
-  };
-  if (prologue) play(prologue, () => { show('wait'); onReady(); });
-  else { show('wait'); onReady(); }
-});
-
-function play(f, onEnd) {
-  $('film').classList.remove('split'); $('jobs').style.opacity = 0;
-  current = f; idx = -1; $('scene').innerHTML = ''; $('scene').style.opacity = 1; $('bg').style.opacity = 0; $('end').style.opacity = 0;
-  if (audio) { audio.pause(); }
-  audio = new Audio(`data:${f.mime || 'audio/mpeg'};base64,` + f.audio);
-  ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
+// ---- a film is a list of segments; each segment is one audio clip with timed scenes. Segments may arrive while earlier ones play. ----
+const film = { segments: [], next: 0, total: null, visual: null, onEnd: null, active: false };
+function resetFilm(onEnd) { Object.assign(film, { segments: [], next: 0, total: null, visual: null, onEnd, active: true }); idx = -1; }
+function startFilm(onEnd) {
+  resetFilm(onEnd); $('film').classList.remove('split'); $('jobs').style.opacity = 0; stopVisual();
+  $('scene').innerHTML = ''; $('scene').style.opacity = 1; $('bg').style.opacity = 0; $('end').style.opacity = 0;
+  ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); ctx.resume();
+  show('film');
+}
+function addSegment(seg) { film.segments[seg.i] = seg; pump(); }
+function pump() {  // play the next segment if it has arrived and nothing is playing
+  if (!film.active || playing) return;
+  const seg = film.segments[film.next];
+  if (!seg) { if (film.total !== null && film.next >= film.total) endFilm(); else $('light').style.transform = 'scale(.5)'; return; }
+  if (seg.error || !seg.audio) { film.next++; return pump(); }
+  playSegment(seg);
+}
+function playSegment(seg) {
+  audio = new Audio(`data:${seg.mime || 'audio/mpeg'};base64,` + seg.audio);
   const src = ctx.createMediaElementSource(audio);
   analyser = ctx.createAnalyser(); analyser.fftSize = 256; data = new Uint8Array(analyser.frequencyBinCount);
   src.connect(analyser); analyser.connect(ctx.destination);
-  show('film'); startVisual(f.visual);
-  setTimeout(() => { ctx.resume(); audio.play(); playing = true; breathe(); }, 1200);
+  let local = -1;
   audio.addEventListener('timeupdate', () => {
-    const t = audio.currentTime;
-    let n = idx; while (n + 1 < f.scenes.length && t >= f.scenes[n+1].start - 0.15) n++;
-    if (n !== idx) setScene(f, n);
+    const t = audio.currentTime; let n = local;
+    while (n + 1 < seg.scenes.length && t >= seg.scenes[n + 1].start - 0.15) n++;
+    if (n !== local) { local = n; idx = film.next; setScene(seg.scenes[n], current === prologue && !(film.next === 0 && n === seg.scenes.length - 1)); }
   });
-  audio.addEventListener('ended', () => { playing = false; stopVisual(); $('light').style.transform = 'scale(.4)'; $('scene').style.opacity = 0; setTimeout(onEnd, 1000); });
+  audio.addEventListener('ended', () => { playing = false; film.next++; setTimeout(pump, 350); });
+  playing = true; audio.play(); breathe();
 }
+function endFilm() { film.active = false; playing = false; stopVisual(); $('light').style.transform = 'scale(.4)'; $('scene').style.opacity = 0; setTimeout(film.onEnd, 900); }
 
-function setScene(f, n) {
-  idx = n; const s = f.scenes[n];
-  const pro = f === prologue && n < f.scenes.length - 1;
-  $('film').classList.toggle('split', pro); $('jobs').style.opacity = pro ? 1 : 0;
+function setScene(s, pro) {
+  $('film').classList.toggle('split', !!pro); $('jobs').style.opacity = pro ? 1 : 0;
   const el = $('scene'); el.style.opacity = 0;
   setTimeout(() => { el.innerHTML = s.html || ''; el.style.opacity = 1; }, s.html ? 450 : 0);
   const bg = $('bg');
-  if (s.image) { bg.style.backgroundImage = `url(/static/img/${s.image}.jpg)`; bg.style.opacity = .55; }
-  else bg.style.opacity = 0;
+  if (s.image) { bg.style.backgroundImage = `url(/static/img/${s.image}.jpg)`; bg.style.opacity = .55; } else bg.style.opacity = 0;
 }
 
-// --- Steve Jobs halftone portrait, pulses with the voice ---
-const jobs = { dots: [], ready: false, level: 0 };
+// ---- Steve Jobs halftone portrait, pulses with the voice ----
+const jobs = { dots: [], ready: false };
 (() => {
   const img = new Image(); img.src = '/static/img/jobs.jpg';
   img.onload = () => {
-    const cols = 96, sx = 150, sy = 90, sw = 640, sh = 1000;  // crop to the face
-    const rows = Math.round(cols * sh / sw);
+    const cols = 96, sx = 150, sy = 90, sw = 640, sh = 1000, rows = Math.round(cols * sh / sw);
     const off = document.createElement('canvas'); off.width = cols; off.height = rows;
     const o = off.getContext('2d'); o.drawImage(img, sx, sy, sw, sh, 0, 0, cols, rows);
     const d = o.getImageData(0, 0, cols, rows).data;
@@ -144,17 +134,16 @@ function drawJobs(level) {
   const W = c.width = c.clientWidth * devicePixelRatio, H = c.height = c.clientHeight * devicePixelRatio;
   const g = c.getContext('2d'); g.clearRect(0, 0, W, H);
   const cell = Math.min(W / jobs.cols, H / jobs.rows) * 0.92, ox = (W - cell * jobs.cols) / 2 + W * 0.04, oy = (H - cell * jobs.rows) / 2;
-  const boost = 1 + level * 0.45;
-  g.fillStyle = '#fff';
+  const boost = 1 + level * 0.45; g.fillStyle = '#fff';
   for (const [x, y, v] of jobs.dots) {
     const r = v * cell * 0.5 * boost; if (r < 0.3) continue;
     g.beginPath(); g.arc(ox + x * jobs.cols * cell + cell / 2, oy + y * jobs.rows * cell + cell / 2, r, 0, 6.283); g.fill();
   }
 }
 
-// --- generated 3D layer ---
+// ---- generated 3D layer; may start mid-film ----
 const gl = { renderer: null, scene: null, camera: null, update: null, t0: 0 };
-function startVisual(js) {
+function startVisual(js, N) {
   stopVisual(); if (!js || !window.THREE) return;
   try {
     const c = $('gl'), W = c.clientWidth, H = c.clientHeight;
@@ -162,8 +151,7 @@ function startVisual(js) {
     gl.renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); gl.renderer.setSize(W, H, false); gl.renderer.setClearColor(0x000000, 0);
     gl.scene = new THREE.Scene();
     gl.camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100); gl.camera.position.set(0, 0, 6); gl.camera.lookAt(0, 0, 0);
-    const N = current.scenes.length;
-    gl.update = new Function('THREE', 'scene', 'camera', 'renderer', 'W', 'H', 'N', js + '\n;return typeof update === "function" ? update : null;')(THREE, gl.scene, gl.camera, gl.renderer, W, H, N);
+    gl.update = new Function('THREE', 'scene', 'camera', 'renderer', 'W', 'H', 'N', js + '\n;return typeof update === "function" ? update : null;')(THREE, gl.scene, gl.camera, gl.renderer, W, H, N || 10);
     gl.t0 = performance.now(); c.style.opacity = 1;
   } catch (e) { console.warn('visual failed', e); stopVisual(); }
 }
@@ -180,17 +168,50 @@ function breathe() {
   let sum = 0; for (let i = 2; i < 40; i++) sum += data[i];
   const v = sum / 38 / 255;
   $('light').style.transform = `scale(${0.55 + v * 1.1})`;
-  drawJobs(v);
-  renderVisual(v);
+  drawJobs(v); renderVisual(v);
   requestAnimationFrame(breathe);
 }
 
+// ---- ask -> stream ----
+async function ask(belief) {
+  current = null; startFilm(() => { $('end').style.opacity = 1; });
+  const r = await fetch('/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ belief }) });
+  const reader = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+  while (true) {
+    const { value, done } = await reader.read(); if (done) break;
+    buf += dec.decode(value, { stream: true }); const parts = buf.split('\n'); buf = parts.pop();
+    for (const p of parts) if (p.trim()) onEvent(JSON.parse(p));
+  }
+}
+function onEvent(ev) {
+  if (ev.type === 'segment') { for (const s of ev.scenes || []) if (s.image) new Image().src = `/static/img/${s.image}.jpg`; addSegment(ev); }
+  else if (ev.type === 'lines_done') { film.total = ev.n; pump(); }
+  else if (ev.type === 'visual') { film.visual = ev.js; if (film.active && ev.js) startVisual(ev.js, ev.n); }
+  else if (ev.type === 'error') { console.warn(ev.error); film.total = film.segments.length; pump(); }
+}
+function playWhole(f, onEnd) { current = f; startFilm(onEnd); f.segments.forEach((s, i) => addSegment({ ...s, i })); film.total = f.segments.length; if (f.visual) startVisual(f.visual, f.segments.length); pump(); }
+
+$('belief').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || !$('belief').value.trim()) return;
+  ask($('belief').value.trim());
+});
 document.addEventListener('keydown', e => {
   const asking = !$('ask').classList.contains('hidden');
-  if (asking && e.key >= '1' && e.key <= '7' && !$('belief').value) { e.preventDefault(); $('belief').value = EXAMPLES[e.key - 1]; return; }
+  if (asking && e.key >= '1' && e.key <= '7' && !$('belief').value) { e.preventDefault(); $('belief').value = EXAMPLES[e.key - 1]; $('ask').classList.add('typed'); return; }
+  if (asking && e.key === 'p' && prologue && !$('belief').value) { e.preventDefault(); playWhole(prologue, () => show('ask')); return; }
   if (asking) return;
-  if (e.key === 'Enter' && !playing) { $('belief').value = ''; show('ask'); $('belief').focus(); }
-  if (e.key === 'r' && film && !playing) play(film, () => { $('end').style.opacity = 1; });
-  if (e.key === 'Escape') location.reload();
+  if (e.key === 'Enter' && !film.active) { show('ask'); $('belief').focus(); }
+  if (e.key === 'Escape') { if (audio) audio.pause(); film.active = false; playing = false; stopVisual(); show('ask'); $('belief').focus(); }
+});
+
+// ?preview=<cache key>&t=<seconds>: silent still frame for screenshots
+const PV = new URLSearchParams(location.search);
+if (PV.get('preview')) fetch('/film/' + PV.get('preview')).then(r => r.json()).then(f => {
+  document.body.classList.add('preview'); current = f; const t = +(PV.get('t') || 0); startFilm(() => {}); film.active = false;
+  let acc = 0, si = 0; while (si < f.segments.length - 1 && t >= acc + f.segments[si].duration) { acc += f.segments[si].duration; si++; }
+  const seg = f.segments[si], lt = t - acc; let n = -1; while (n + 1 < seg.scenes.length && lt >= seg.scenes[n + 1].start) n++;
+  idx = si; if (n >= 0) setScene(seg.scenes[n], false);
+  startVisual(f.visual, f.segments.length); gl.t0 = performance.now() - t * 1000;
+  $('light').style.transform = 'scale(.8)'; setInterval(() => renderVisual(0.3), 40);
 });
 </script></body></html>

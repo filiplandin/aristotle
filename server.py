@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
-import base64, hashlib, json, os, subprocess, httpx
+import queue, threading
+from fastapi.responses import StreamingResponse
+import base64, hashlib, json, os, re, subprocess, httpx
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -36,7 +38,7 @@ FORBIDDEN, because they are the sound of a machine, not a mind: "Here's the thin
 
 VOICE: expressive TTS. At most 4 tags, in square brackets: [laughs softly] [whispers] [curious] [thoughtful] [emphatic]. Use "..." for a beat.
 
-SHAPE: 8 to 10 lines. Each line is one beat of 3 to 16 words. Total 90 to 120 words. Line 1 quotes their belief verbatim, then steelmans it.
+SHAPE: 8 to 10 lines. Each line is one beat of 3 to 16 words. Total 90 to 120 words. If lines have already been spoken, do not repeat the quote or the steelman.
 Optional turn before the close ("So... one more thing." or your own, or none).
 
 EXAMPLE of the standard, for the belief "Everyone is entitled to their opinion.":
@@ -51,6 +53,14 @@ EXAMPLE of the standard, for the belief "Everyone is entitled to their opinion."
  "[whispers] Which is it you actually want... to be right... or to be left alone?"]
 
 OUTPUT: ONLY a JSON array of strings, no markdown fences, no commentary."""
+
+OPENER = """You are Aristotle, alive in 2026, on a keynote stage. One person just told you what they believe. You speak first, before you have finished thinking.
+Their belief has just been read aloud, verbatim, in your voice. Do not quote it again.
+Write ONLY the next two spoken beats. Beat 1: one line that says their belief better than they did, as a claim, so they nod. Never announce what you are doing ("the strongest version", "let me steelman").
+Beat 2: one more line that stays on their side... and lets a first doubt into the room, without answering it.
+Steve Jobs delivery: short sentences, plain words, no "Here's the thing", no "smuggled", no flattery. Each beat 8 to 22 words.
+Optional TTS tags, at most 1: [thoughtful] [curious]. Use "..." for a beat.
+OUTPUT: ONLY a JSON array of two strings."""
 
 SLIDES = f"""You design keynote slides for a spoken film. Stage: pure black, white text, -apple-system/Helvetica. You are Steve Jobs's slide designer.
 For each spoken line, write ONE small HTML fragment shown while it is spoken. Available classes (styled by the stage, with entrance motion):
@@ -80,62 +90,158 @@ import anthropic
 _client = anthropic.Anthropic(max_retries=4, timeout=120)
 
 
-def claude(model: str, system: str, user: str, think: bool = False, retry: bool = False):
-    kw = dict(model=model, max_tokens=4000, system=system, messages=[{"role": "user", "content": user}])
-    fast = dict(thinking={"type": "adaptive"}, output_config={"effort": "low"})
-    msg = _client.messages.create(**(dict(thinking={"type": "adaptive"}) if think else fast), **kw)
-    text = next(b.text for b in msg.content if b.type == "text").strip()
+def _text(msg):
+    return next(b.text for b in msg.content if b.type == "text").strip()
+
+
+def _json(text, retry):
     try:
         return json.JSONDecoder().raw_decode(text[text.find("["):])[0]
     except json.JSONDecodeError:
         if retry: raise
-        return claude(model, system, user, think, retry=True)
+        return None
+
+
+def claude(model: str, system: str, user: str, effort: str = "low", retry: bool = False):
+    msg = _client.messages.create(model=model, max_tokens=4000, system=system, output_config={"effort": effort},
+                                  messages=[{"role": "user", "content": user}])
+    out = _json(_text(msg), retry)
+    return out if out is not None else claude(model, system, user, effort, retry=True)
+
+
+def stream_lines(system: str, user: str, effort: str):
+    """Stream a JSON array of strings from Opus, yielding each string as soon as it closes."""
+    buf, in_str, esc, started = "", False, False, False
+    with _client.messages.stream(model="claude-opus-5-5", max_tokens=6000, system=system, output_config={"effort": effort},
+                                 messages=[{"role": "user", "content": user}]) as st:
+        for ev in st:
+            if ev.type != "content_block_delta" or ev.delta.type != "text_delta": continue
+            for ch in ev.delta.text:
+                if not started:
+                    if ch == "[": started = True
+                    continue
+                if in_str:
+                    buf += ch
+                    if esc: esc = False
+                    elif ch == "\\": esc = True
+                    elif ch == '"':
+                        in_str = False
+                        yield json.loads(buf)
+                        buf = ""
+                elif ch == '"': in_str, buf = True, '"'
+                elif ch == "]": return
+
+
+def slide(line: str, used: list) -> dict:
+    user = f"Spoken line: {json.dumps(line)}\nForms already used, in order: {used or 'none'}\nOUTPUT ONLY one JSON object {{\"html\": ..., \"image\": ...}} for this line."
+    msg = _client.messages.create(model="claude-haiku-4-5", max_tokens=400, system=SLIDES, messages=[{"role": "user", "content": user}])
+    text = _text(msg)
+    try: return json.JSONDecoder().raw_decode(text[text.find("{"):])[0]
+    except (json.JSONDecodeError, ValueError): return {"html": "", "image": None}
 
 
 def visual(lines) -> str:
-    kw = dict(model="claude-opus-5-5", max_tokens=8000, system=VISUAL, thinking={"type": "adaptive"}, output_config={"effort": "low"},
+    kw = dict(model="claude-opus-5-5", max_tokens=8000, system=VISUAL, output_config={"effort": "low"},
               messages=[{"role": "user", "content": "Spoken lines:\n" + json.dumps(lines, indent=1)}])
-    text = next(b.text for b in _client.messages.create(**kw).content if b.type == "text").strip()
+    text = _text(_client.messages.create(**kw))
     if text.startswith("```"): text = text.split("\n", 1)[1].rsplit("```", 1)[0]
     return text
 
 
-def tts(script: str) -> dict:
-    r = httpx.post(f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE}/with-timestamps",
-                   headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]},
-                   json={"text": script, "model_id": "eleven_v3",
-                         "voice_settings": {"stability": 0.45, "similarity_boost": 0.85, "style": 0.5, "speed": 0.98}},
-                   timeout=120)
+_tts_slots = threading.Semaphore(4)
+
+
+def tts(text: str) -> dict:
+    body = {"text": text, "model_id": "eleven_v3",
+            "voice_settings": {"stability": 0.45, "similarity_boost": 0.85, "style": 0.5, "speed": 0.98}}
+    with _tts_slots:
+        r = httpx.post(f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE}/with-timestamps",
+                       headers={"xi-api-key": os.environ["ELEVENLABS_API_KEY"]}, json=body, timeout=120)
     if r.status_code != 200:
         raise RuntimeError(f"ElevenLabs {r.status_code}: {r.text[:300]}")
     return r.json()
 
 
-def build(belief: str) -> dict:
-    lines = [l.strip() for l in claude("claude-opus-5-5", SCRIPT, f'The person believes: "{belief}"', think=True)]
-    script = " ".join(lines)
-    with ThreadPoolExecutor(3) as ex:
-        a = ex.submit(tts, script)
-        b = ex.submit(claude, "claude-sonnet-5", SLIDES, "Spoken lines:\n" + json.dumps(lines, indent=1))
-        c = ex.submit(visual, lines)
-        audio, slides = a.result(), b.result()
-        try: js = c.result()
-        except Exception: js = ""
-    scenes = [{"line": l, "html": sl.get("html", ""), "image": sl.get("image")} for l, sl in zip(lines, slides)]
-    al = audio["alignment"]
-    starts = al["character_start_times_seconds"]
-    total = al["character_end_times_seconds"][-1]
-    chars = "".join(al["characters"])
-    # map each scene to the time its first character is spoken
-    pos, t = 0, []
-    for line in lines:
-        i = chars.find(line[:12], pos)
-        if i < 0: i = pos
-        t.append(starts[min(i, len(starts) - 1)])
-        pos = i + len(line)
-    for s, st in zip(scenes, t):
-        s["start"] = st
-    return {"belief": belief, "script": script, "duration": total, "scenes": scenes, "visual": js, "audio": audio["audio_base64"]}
+def segment(i: int, line: str, used: list) -> dict:
+    """One spoken beat: audio plus its slide. Runs the two calls in parallel."""
+    with ThreadPoolExecutor(2) as ex:
+        a = ex.submit(tts, line)
+        b = ex.submit(slide, line, used)
+        audio, sl = a.result(), b.result()
+    return {"i": i, "line": line, "mime": "audio/mpeg", "audio": audio["audio_base64"],
+            "duration": audio["alignment"]["character_end_times_seconds"][-1],
+            "scenes": [{"start": 0, "html": sl.get("html", ""), "image": sl.get("image")}]}
+
+
+def stream_film(belief: str):
+    """Yields NDJSON events: segment (in order), visual, done. Speech starts while Opus is still reasoning."""
+    q, lock = queue.Queue(), threading.Lock()
+    ready, emitted, lines, used, done = {}, [0], [], [], {"script": False, "n": None}
+    pool = ThreadPoolExecutor(8)
+
+    def flush():
+        with lock:
+            while emitted[0] in ready:
+                q.put(ready.pop(emitted[0])); emitted[0] += 1
+            if done["script"] and emitted[0] == len(lines): q.put({"type": "lines_done", "n": len(lines)})
+
+    def add(i, line):
+        lines.append(line); forms = list(used)
+        def run():
+            try: seg = segment(i, line, forms)
+            except Exception as e: seg = {"i": i, "line": line, "error": str(e)[:200]}
+            seg["type"] = "segment"
+            with lock: ready[i] = seg
+            flush()
+        pool.submit(run)
+
+    def script():
+        try:
+            add(0, f'"{belief}"')  # known at t=0: the belief read back, voiced before any model has answered
+            opener = claude("claude-sonnet-5", OPENER, f'The person believes: "{belief}"', effort="low")
+            for l in opener[:2]: add(len(lines), l.strip())
+            user = (f'The person believes: "{belief}"\n\nThese lines have already been spoken:\n'
+                    + "\n".join(f"{k+1}. {l}" for k, l in enumerate(lines))
+                    + "\n\nContinue from the next line, keeping the whole shape. OUTPUT ONLY the remaining lines as a JSON array of strings.")
+            for l in stream_lines(SCRIPT, user, "low"): add(len(lines), l.strip())
+        except Exception as e:
+            q.put({"type": "error", "error": str(e)[:300]})
+        done["script"] = True; flush()
+        try: q.put({"type": "visual", "js": visual(lines), "n": len(lines)})
+        except Exception as e: q.put({"type": "visual", "js": "", "n": len(lines), "error": str(e)[:200]})
+        q.put({"type": "done"})
+
+    threading.Thread(target=script, daemon=True).start()
+    segs, js = [], ""
+    while True:
+        ev = q.get()
+        if ev["type"] == "segment" and "audio" in ev:
+            segs.append({k: ev[k] for k in ("line", "mime", "audio", "duration", "scenes")})
+            used.append(re.sub(r'.*class="?(\w+).*', r"\1", ev["scenes"][0]["html"] or "") or "silence")
+        if ev["type"] == "visual": js = ev["js"]
+        yield json.dumps(ev) + "\n"
+        if ev["type"] == "done": break
+    pool.shutdown(wait=False)
+    if segs:
+        film = {"belief": belief, "segments": segs, "visual": js, "duration": sum(s["duration"] for s in segs)}
+        (CACHE / (hashlib.md5(belief.lower().encode()).hexdigest() + ".json")).write_text(json.dumps(film))
+
+
+def normalize(film: dict) -> dict:
+    """Old single-audio films become one segment."""
+    if "segments" not in film:
+        film = {"belief": film["belief"], "visual": film.get("visual", ""), "duration": film["duration"], "mime": film.get("mime", "audio/mpeg"),
+                "segments": [{"line": film.get("script", ""), "mime": film.get("mime", "audio/mpeg"), "audio": film["audio"],
+                              "duration": film["duration"], "scenes": film["scenes"]}]}
+    return film
+
+
+def replay(film: dict):
+    for i, s in enumerate(film["segments"]):
+        yield json.dumps({"type": "segment", "i": i, **s}) + "\n"
+    yield json.dumps({"type": "lines_done", "n": len(film["segments"])}) + "\n"
+    yield json.dumps({"type": "visual", "js": film.get("visual", ""), "n": len(film["segments"])}) + "\n"
+    yield json.dumps({"type": "done"}) + "\n"
 
 
 app = FastAPI()
@@ -145,24 +251,13 @@ app = FastAPI()
 def generate(body: dict):
     belief = body["belief"].strip()
     f = CACHE / (hashlib.md5(belief.lower().encode()).hexdigest() + ".json")
-    if f.exists():
-        return json.loads(f.read_text())
-    try:
-        film = build(belief)
-    except Exception as e:  # stage fallback: last good film
-        cached = sorted(CACHE.glob("*.json"), key=os.path.getmtime)
-        if not cached:
-            return JSONResponse({"error": str(e)}, 500)
-        film = json.loads(cached[-1].read_text()); film["fallback"] = str(e)
-        return film
-    f.write_text(json.dumps(film))
-    (CACHE / "latest.json").write_text(json.dumps(film))
-    return film
+    gen = replay(normalize(json.loads(f.read_text()))) if f.exists() else stream_film(belief)
+    return StreamingResponse(gen, media_type="application/x-ndjson")
 
 
 @app.get("/film/{key}")
 def film(key: str):
-    return FileResponse(CACHE / f"{key}.json")
+    return normalize(json.loads((CACHE / f"{key}.json").read_text()))
 
 
 @app.get("/")
